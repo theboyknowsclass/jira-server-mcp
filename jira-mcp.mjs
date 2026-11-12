@@ -8,6 +8,8 @@
  *     "baseUrl": "https://jira.example.com",
  *     "token": "<personal access token>",          // or env JIRA_PAT
  *     "fields": { "epicLink": "customfield_10100", "sprint": "customfield_10101" },  // optional, else looked up by name
+ *     "resolve": { "default": { "status": "Resolved", "resolution": "Fixed", "via": ["In Progress"] },
+ *                  "Task": { "status": "Done", "resolution": "Done" } },   // optional, per issue type
  *     "presets": {
  *       "team-x": { "summaryPrefix": "[X] ", "epic": "PROJ-1", "sprintPrefix": "X Sprint",
  *                   "fields": { "fixVersions": [{ "name": "1.0" }] } }
@@ -284,6 +286,47 @@ const tools = [
       if (comment) body.update = { comment: [{ add: { body: comment } }] };
       await call("POST", path, body);
       return `${key}: ${t.name} -> ${t.to}`;
+    },
+  },
+  {
+    name: "jira_resolve",
+    description: "Finish an issue: walks the workflow to the done status (default Resolved), passing through `via` statuses if needed (default In Progress), and sets the resolution (default Fixed) plus an optional comment. Defaults per issue type come from `resolve` in jira-mcp.json.",
+    inputSchema: schema({
+      key: str(),
+      status: str("Target status, e.g. Resolved"),
+      resolution: str("e.g. Fixed; empty string = don't set"),
+      via: strs("Statuses allowed on the way, in order of preference"),
+      comment: str(),
+    }, ["key"]),
+    run: async ({ key, status, resolution, via, comment }) => {
+      const issue = await call("GET", `/rest/api/2/issue/${enc(key)}?fields=issuetype,status`);
+      const type = issue.fields.issuetype.name;
+      const cfg = { status: "Resolved", resolution: "Fixed", via: ["In Progress"], ...(CONFIG.resolve?.default ?? {}), ...(CONFIG.resolve?.[type] ?? {}) };
+      const target = (status ?? cfg.status).toLowerCase();
+      const res = resolution ?? cfg.resolution;
+      const viaList = (via ?? cfg.via).map((v) => v.toLowerCase());
+      const path = `/rest/api/2/issue/${enc(key)}/transitions`;
+      const steps = [];
+      const seen = new Set([issue.fields.status.name.toLowerCase()]);
+      if (seen.has(target)) return `${key} is already ${issue.fields.status.name}`;
+      for (let i = 0; i < 6; i++) {
+        const list = (await call("GET", `${path}?expand=transitions.fields`)).transitions;
+        const done = list.find((t) => t.to?.name?.toLowerCase() === target);
+        if (done) {
+          const body = { transition: { id: done.id } };
+          if (res && done.fields?.resolution) body.fields = { resolution: { name: res } };
+          if (comment) body.update = { comment: [{ add: { body: comment } }] };
+          await call("POST", path, body);
+          steps.push(`${done.name} -> ${done.to.name}${body.fields ? ` (${res})` : ""}`);
+          return `${key} (${type}): ${steps.join(", ")}`;
+        }
+        const next = viaList.map((v) => list.find((t) => t.to?.name?.toLowerCase() === v && !seen.has(v))).find(Boolean);
+        if (!next) throw new Error(`${key}: can't reach "${status ?? cfg.status}" from ${[...seen].pop()}. Available: ${list.map((t) => `${t.name} -> ${t.to?.name}`).join(", ")}${steps.length ? `. Done so far: ${steps.join(", ")}` : ""}`);
+        await call("POST", path, { transition: { id: next.id } });
+        seen.add(next.to.name.toLowerCase());
+        steps.push(`${next.name} -> ${next.to.name}`);
+      }
+      throw new Error(`${key}: gave up after ${steps.join(", ")}`);
     },
   },
   {

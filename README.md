@@ -19,6 +19,7 @@ A tiny MCP server for **self-hosted Jira Server / Data Center**: one file, no np
 | `jira_update_issue` | Set fields or add/remove values |
 | `jira_add_comment` | Comment (wiki markup) |
 | `jira_transition` | List or run workflow transitions |
+| `jira_resolve` | Walk to Resolved (via In Progress) and set resolution Fixed; per-type overrides |
 | `jira_link_issues` | Link issues / list link types |
 | `jira_find_user` | Look up usernames |
 | `jira_request` | Any other REST call |
@@ -50,6 +51,15 @@ Team defaults for `jira_create_issue`, so you only give a summary and descriptio
 - `fields`: any other fields, REST v2 shape.
 
 Epic Link and Sprint field ids are found by name. Override with `fields.epicLink` / `fields.sprint` in the config if yours differ.
+
+## Resolve
+
+`jira_resolve` walks the workflow to a done status, passing through `via` statuses, and sets the resolution. Defaults: Resolved / Fixed / via In Progress. Override per issue type:
+
+```json
+"resolve": { "default": { "status": "Resolved", "resolution": "Fixed", "via": ["In Progress"] },
+             "Task": { "status": "Done", "resolution": "Done" } }
+```
 
 ## CLI
 

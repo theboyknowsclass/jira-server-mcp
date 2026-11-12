@@ -1,0 +1,17 @@
+{
+  "baseUrl": "https://jira.example.com",
+  "token": "<personal access token>",
+  "presets": {
+    "my-team": {
+      "description": "Team X work",
+      "summaryPrefix": "[X] - ",
+      "epic": "PROJ-1",
+      "sprintPrefix": "X Sprint",
+      "fields": {
+        "versions": [{ "name": "1.0" }],
+        "fixVersions": [{ "name": "1.0" }],
+        "assignee": { "name": "jdoe" }
+      }
+    }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "name": "jira-server-mcp",
+  "version": "1.0.0",
+  "description": "Zero-dependency MCP server for self-hosted Jira Server / Data Center",
+  "type": "module",
+  "bin": { "jira-server-mcp": "jira-mcp.mjs" },
+  "engines": { "node": ">=22.15" },
+  "license": "MIT"
+}

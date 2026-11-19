@@ -36,10 +36,12 @@ A tiny MCP server for **self-hosted Jira Server / Data Center**: one file, no np
 { "servers": { "jira": { "type": "stdio", "command": "node", "args": ["/path/to/jira-mcp.mjs"] } } }
 ```
 
-**Cline / Claude Desktop** (`cline_mcp_settings.json` / `claude_desktop_config.json`):
+**Claude Desktop** (`claude_desktop_config.json`):
 ```json
 { "mcpServers": { "jira": { "command": "node", "args": ["/path/to/jira-mcp.mjs"] } } }
 ```
+
+**Cline**: see [Using it from Cline](#using-it-from-cline).
 
 ## Presets
 
@@ -60,6 +62,42 @@ Epic Link and Sprint field ids are found by name. Override with `fields.epicLink
 "resolve": { "default": { "status": "Resolved", "resolution": "Fixed", "via": ["In Progress"] },
              "Task": { "status": "Done", "resolution": "Done" } }
 ```
+
+## Using it from Cline
+
+Where Cline keeps its MCP settings:
+
+- Easiest: in Cline, click **MCP Servers** (stack icon) → **Installed** → **Configure MCP Servers**. This opens `cline_mcp_settings.json`.
+- VS Code extension: `%APPDATA%\Code\User\globalStorage\saoudrizwan.claude-dev\settings\cline_mcp_settings.json`
+- Cline CLI / standalone: `%USERPROFILE%\.cline\data\settings\cline_mcp_settings.json`
+
+Steps:
+
+1. Copy the repo to a folder, e.g. `C:\tools\jira-server-mcp`.
+2. Copy `jira-mcp.example.json` to `jira-mcp.json` there and fill it in (see **Setup** above).
+3. Check it works: `node C:\tools\jira-server-mcp\jira-mcp.mjs --call jira_whoami`.
+4. Add a `jira` entry under `mcpServers` (merge it with any servers already there):
+
+```json
+{
+  "mcpServers": {
+    "jira": {
+      "command": "node",
+      "args": ["C:\\tools\\jira-server-mcp\\jira-mcp.mjs"],
+      "disabled": false,
+      "timeout": 60
+    }
+  }
+}
+```
+
+5. Save. Cline restarts the server; it should show a green dot in **MCP Servers**.
+
+Notes:
+
+- Backslashes in Windows paths must be doubled in JSON.
+- The server reads `jira-mcp.json` from its own folder, so no `env` is needed. To keep the config elsewhere, add `"env": { "JIRA_MCP_CONFIG": "C:\\path\\to\\jira-mcp.json" }`.
+- `node` must be on PATH (Node 22.15+). If not, use the full path, e.g. `"C:\\Program Files\\nodejs\\node.exe"`.
 
 ## CLI
 

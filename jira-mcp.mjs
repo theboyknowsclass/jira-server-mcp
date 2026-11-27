@@ -28,8 +28,9 @@ import https from "node:https";
 import http from "node:http";
 import tls from "node:tls";
 import readline from "node:readline";
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { randomBytes } from "node:crypto";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { basename, dirname, extname, join, relative, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const CONFIG_PATH = process.env.JIRA_MCP_CONFIG ?? join(dirname(fileURLToPath(import.meta.url)), "jira-mcp.json");
@@ -47,9 +48,11 @@ const log = (...a) => console.error("[jira]", ...a);
 let ca;
 try { ca = [...tls.rootCertificates, ...tls.getCACertificates("system")]; } catch { ca = undefined; }
 
+/** body: JSON value, or { raw: Buffer, contentType, headers } for non-JSON payloads (uploads). */
 function jira(method, path, body) {
   const url = new URL(path.startsWith("http") ? path : BASE_URL + path);
-  const payload = body === undefined ? undefined : Buffer.from(JSON.stringify(body), "utf8");
+  const raw = body?.raw instanceof Buffer ? body : undefined;
+  const payload = raw ? raw.raw : body === undefined ? undefined : Buffer.from(JSON.stringify(body), "utf8");
   const lib = url.protocol === "http:" ? http : https;
   return new Promise((resolve, reject) => {
     const req = lib.request(url, {
@@ -59,7 +62,8 @@ function jira(method, path, body) {
       headers: {
         Authorization: `Bearer ${TOKEN}`,
         Accept: "application/json",
-        ...(payload && { "Content-Type": "application/json; charset=utf-8", "Content-Length": payload.length }),
+        ...(payload && { "Content-Type": raw?.contentType ?? "application/json; charset=utf-8", "Content-Length": payload.length }),
+        ...(raw?.headers ?? {}),
       },
     }, (res) => {
       const chunks = [];
@@ -116,6 +120,59 @@ async function activeSprintId(project, prefix) {
   return undefined;
 }
 
+/* ---------- attachments ---------- */
+
+const MAX_ATTACH_BYTES = 50 * 1024 * 1024;
+const MAX_ATTACH_TOTAL = 100 * 1024 * 1024;
+const MAX_ATTACH_FILES = 10;
+/** Optional allowlist for local `path` uploads: config "attachments": { "allowedDirs": ["C:\\temp"] }. Unset = any readable file. */
+const ALLOWED_DIRS = (CONFIG.attachments?.allowedDirs ?? []).map((d) => realpathSync(d));
+const allowedPath = (p) => !ALLOWED_DIRS.length || ALLOWED_DIRS.some((d) => { const r = relative(d, p); return r && !r.startsWith("..") && !isAbsolute(r); });
+const MIME = {
+  ".md": "text/markdown", ".txt": "text/plain", ".log": "text/plain", ".csv": "text/csv", ".json": "application/json",
+  ".xml": "application/xml", ".html": "text/html", ".diff": "text/x-diff", ".patch": "text/x-diff", ".sql": "text/plain",
+  ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".svg": "image/svg+xml",
+  ".pdf": "application/pdf", ".zip": "application/zip", ".gz": "application/gzip",
+};
+const mimeOf = (name) => MIME[extname(name).toLowerCase()] ?? "application/octet-stream";
+
+/** One attachment from a local path, inline text, or base64. */
+function attachmentFrom({ path, filename, content, base64 }) {
+  const given = [path, content, base64].filter((x) => x !== undefined).length;
+  if (given !== 1) throw new Error("Each file needs exactly one of path, content or base64.");
+  let data;
+  if (path !== undefined) {
+    if (!existsSync(path)) throw new Error(`No such file: ${path}`);
+    const real = realpathSync(path);
+    if (!allowedPath(real)) throw new Error(`${path} is outside attachments.allowedDirs in the config.`);
+    const st = statSync(real);
+    if (!st.isFile()) throw new Error(`Not a file: ${path}`);
+    if (st.size > MAX_ATTACH_BYTES) throw new Error(`${path} is ${st.size} bytes; limit ${MAX_ATTACH_BYTES}.`);
+    data = readFileSync(real);
+    filename ??= basename(path);
+  } else {
+    if (!filename) throw new Error("filename is required with content or base64.");
+    data = content !== undefined ? Buffer.from(content, "utf8") : Buffer.from(base64, "base64");
+    if (data.length > MAX_ATTACH_BYTES) throw new Error(`${filename} is ${data.length} bytes; limit ${MAX_ATTACH_BYTES}.`);
+  }
+  if (/["\r\n]/.test(filename)) throw new Error(`Bad filename: ${filename}`);
+  return { filename, data };
+}
+
+/** multipart/form-data body with one "file" part per attachment. */
+function multipart(files) {
+  if (files.length > MAX_ATTACH_FILES) throw new Error(`At most ${MAX_ATTACH_FILES} files per call.`);
+  const total = files.reduce((n, f) => n + f.data.length, 0);
+  if (total > MAX_ATTACH_TOTAL) throw new Error(`Files total ${total} bytes; limit ${MAX_ATTACH_TOTAL} per call. Split into several calls.`);
+  const boundary = "----jira-mcp-" + randomBytes(12).toString("hex");
+  const parts = [];
+  for (const f of files) {
+    parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${f.filename}"\r\nContent-Type: ${mimeOf(f.filename)}\r\n\r\n`, "utf8"), f.data, Buffer.from("\r\n"));
+  }
+  parts.push(Buffer.from(`--${boundary}--\r\n`));
+  return { raw: Buffer.concat(parts), contentType: `multipart/form-data; boundary=${boundary}`, headers: { "X-Atlassian-Token": "no-check" } };
+}
+
 const DEFAULT_FIELDS = ["summary", "status", "issuetype", "priority", "assignee", "reporter", "updated", "fixVersions", "components", "labels", "parent"];
 
 function slimIssue(i) {
@@ -129,6 +186,8 @@ function slimIssue(i) {
         const other = l.outwardIssue ?? l.inwardIssue;
         return { type: l.outwardIssue ? l.type?.outward : l.type?.inward, key: other?.key, summary: other?.fields?.summary };
       });
+    } else if (k === "attachment") {
+      out.attachments = v.map((a) => ({ id: a.id, filename: a.filename, size: a.size, mimeType: a.mimeType, author: a.author?.displayName, created: a.created, url: a.content }));
     } else if (k === "subtasks") {
       out.subtasks = v.map((t) => ({ key: t.key, summary: t.fields?.summary, status: t.fields?.status?.name }));
     } else if (Array.isArray(v)) {
@@ -176,10 +235,10 @@ const tools = [
   },
   {
     name: "jira_get_issue",
-    description: "Get one issue with description, comments, links and sub-tasks. Pass fields to narrow, or raw=true for the full Jira JSON.",
+    description: "Get one issue with description, comments, links, sub-tasks and attachments. Pass fields to narrow, or raw=true for the full Jira JSON.",
     inputSchema: schema({ key: str("e.g. PROJ-123"), fields: strs(), raw: { type: "boolean" } }, ["key"]),
     run: async ({ key, fields, raw }) => {
-      const f = fields ?? [...DEFAULT_FIELDS, "description", "comment", "issuelinks", "subtasks", "created", "resolution"];
+      const f = fields ?? [...DEFAULT_FIELDS, "description", "comment", "issuelinks", "subtasks", "attachment", "created", "resolution"];
       const r = await call("GET", `/rest/api/2/issue/${enc(key)}?${q({ fields: f })}`);
       return raw ? r : { ...slimIssue(r), url: browse(r.key) };
     },
@@ -268,6 +327,28 @@ const tools = [
     run: async ({ key, body }) => {
       const r = await call("POST", `/rest/api/2/issue/${enc(key)}/comment`, { body });
       return { id: r.id, url: `${browse(key)}?focusedCommentId=${r.id}` };
+    },
+  },
+  {
+    name: "jira_add_attachment",
+    description: "Attach files to an issue. Each file is a local `path` (on the machine running this server), or `filename` plus `content` (UTF-8 text) or `base64`. Optional `comment` is added after the upload (wiki markup; [^filename] links an attachment). Limits: 50 MB per file, 100 MB and 10 files per call. Local paths can be restricted with attachments.allowedDirs in jira-mcp.json.",
+    inputSchema: schema({
+      key: str("e.g. PROJ-123"),
+      path: str("Local file to attach (shorthand for one file)"),
+      filename: str("Name in Jira; default the path's file name"),
+      content: str("Inline text content (needs filename)"),
+      base64: str("Inline binary content, base64 (needs filename)"),
+      files: { type: "array", description: "Several files: [{path} | {filename, content} | {filename, base64}]", items: schema({ path: str(), filename: str(), content: str(), base64: str() }) },
+      comment: str(),
+    }, ["key"]),
+    run: async ({ key, path, filename, content, base64, files, comment }) => {
+      const list = [...(files ?? [])];
+      if (path !== undefined || content !== undefined || base64 !== undefined) list.unshift({ path, filename, content, base64 });
+      if (!list.length) throw new Error("Pass path, content/base64 with filename, or files.");
+      const r = await call("POST", `/rest/api/2/issue/${enc(key)}/attachments`, multipart(list.map(attachmentFrom)));
+      const out = { key, url: browse(key), attachments: (r ?? []).map((a) => ({ id: a.id, filename: a.filename, size: a.size, url: a.content })) };
+      if (comment) out.commentId = (await call("POST", `/rest/api/2/issue/${enc(key)}/comment`, { body: comment })).id;
+      return out;
     },
   },
   {

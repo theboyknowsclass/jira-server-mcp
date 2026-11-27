@@ -29,8 +29,8 @@ import http from "node:http";
 import tls from "node:tls";
 import readline from "node:readline";
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync, statSync } from "node:fs";
-import { basename, dirname, extname, join } from "node:path";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { basename, dirname, extname, join, relative, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const CONFIG_PATH = process.env.JIRA_MCP_CONFIG ?? join(dirname(fileURLToPath(import.meta.url)), "jira-mcp.json");
@@ -123,6 +123,11 @@ async function activeSprintId(project, prefix) {
 /* ---------- attachments ---------- */
 
 const MAX_ATTACH_BYTES = 50 * 1024 * 1024;
+const MAX_ATTACH_TOTAL = 100 * 1024 * 1024;
+const MAX_ATTACH_FILES = 10;
+/** Optional allowlist for local `path` uploads: config "attachments": { "allowedDirs": ["C:\\temp"] }. Unset = any readable file. */
+const ALLOWED_DIRS = (CONFIG.attachments?.allowedDirs ?? []).map((d) => realpathSync(d));
+const allowedPath = (p) => !ALLOWED_DIRS.length || ALLOWED_DIRS.some((d) => { const r = relative(d, p); return r && !r.startsWith("..") && !isAbsolute(r); });
 const MIME = {
   ".md": "text/markdown", ".txt": "text/plain", ".log": "text/plain", ".csv": "text/csv", ".json": "application/json",
   ".xml": "application/xml", ".html": "text/html", ".diff": "text/x-diff", ".patch": "text/x-diff", ".sql": "text/plain",
@@ -138,10 +143,12 @@ function attachmentFrom({ path, filename, content, base64 }) {
   let data;
   if (path !== undefined) {
     if (!existsSync(path)) throw new Error(`No such file: ${path}`);
-    const st = statSync(path);
+    const real = realpathSync(path);
+    if (!allowedPath(real)) throw new Error(`${path} is outside attachments.allowedDirs in the config.`);
+    const st = statSync(real);
     if (!st.isFile()) throw new Error(`Not a file: ${path}`);
     if (st.size > MAX_ATTACH_BYTES) throw new Error(`${path} is ${st.size} bytes; limit ${MAX_ATTACH_BYTES}.`);
-    data = readFileSync(path);
+    data = readFileSync(real);
     filename ??= basename(path);
   } else {
     if (!filename) throw new Error("filename is required with content or base64.");
@@ -154,6 +161,9 @@ function attachmentFrom({ path, filename, content, base64 }) {
 
 /** multipart/form-data body with one "file" part per attachment. */
 function multipart(files) {
+  if (files.length > MAX_ATTACH_FILES) throw new Error(`At most ${MAX_ATTACH_FILES} files per call.`);
+  const total = files.reduce((n, f) => n + f.data.length, 0);
+  if (total > MAX_ATTACH_TOTAL) throw new Error(`Files total ${total} bytes; limit ${MAX_ATTACH_TOTAL} per call. Split into several calls.`);
   const boundary = "----jira-mcp-" + randomBytes(12).toString("hex");
   const parts = [];
   for (const f of files) {
@@ -225,7 +235,7 @@ const tools = [
   },
   {
     name: "jira_get_issue",
-    description: "Get one issue with description, comments, links and sub-tasks. Pass fields to narrow, or raw=true for the full Jira JSON.",
+    description: "Get one issue with description, comments, links, sub-tasks and attachments. Pass fields to narrow, or raw=true for the full Jira JSON.",
     inputSchema: schema({ key: str("e.g. PROJ-123"), fields: strs(), raw: { type: "boolean" } }, ["key"]),
     run: async ({ key, fields, raw }) => {
       const f = fields ?? [...DEFAULT_FIELDS, "description", "comment", "issuelinks", "subtasks", "attachment", "created", "resolution"];
@@ -321,7 +331,7 @@ const tools = [
   },
   {
     name: "jira_add_attachment",
-    description: "Attach files to an issue. Each file is a local `path` (on the machine running this server), or `filename` plus `content` (UTF-8 text) or `base64`. Optional `comment` is added after the upload (wiki markup; [^filename] links an attachment). Limit 50 MB per file.",
+    description: "Attach files to an issue. Each file is a local `path` (on the machine running this server), or `filename` plus `content` (UTF-8 text) or `base64`. Optional `comment` is added after the upload (wiki markup; [^filename] links an attachment). Limits: 50 MB per file, 100 MB and 10 files per call. Local paths can be restricted with attachments.allowedDirs in jira-mcp.json.",
     inputSchema: schema({
       key: str("e.g. PROJ-123"),
       path: str("Local file to attach (shorthand for one file)"),

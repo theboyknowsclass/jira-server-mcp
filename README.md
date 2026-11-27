@@ -18,7 +18,7 @@ A tiny MCP server for **self-hosted Jira Server / Data Center**: one file, no np
 | `jira_create_issue` | Create, optionally from a preset |
 | `jira_update_issue` | Set fields or add/remove values |
 | `jira_add_comment` | Comment (wiki markup) |
-| `jira_add_attachment` | Attach local files, or inline text / base64 (50 MB each), optional comment |
+| `jira_add_attachment` | Attach local files, or inline text / base64 (50 MB each, 100 MB / 10 files per call), optional comment |
 | `jira_transition` | List or run workflow transitions |
 | `jira_resolve` | Walk to Resolved (via In Progress) and set resolution Fixed; per-type overrides |
 | `jira_link_issues` | Link issues / list link types |
@@ -54,6 +54,16 @@ Team defaults for `jira_create_issue`, so you only give a summary and descriptio
 - `fields`: any other fields, REST v2 shape.
 
 Epic Link and Sprint field ids are found by name. Override with `fields.epicLink` / `fields.sprint` in the config if yours differ.
+
+## Attachments
+
+`jira_add_attachment` reads local `path` files on the machine running the server. To limit which files it may upload, list folders in the config:
+
+```json
+"attachments": { "allowedDirs": ["C:\\temp\\jira"] }
+```
+
+Unset means any file the server can read.
 
 ## Resolve
 

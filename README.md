@@ -12,12 +12,13 @@ A tiny MCP server for **self-hosted Jira Server / Data Center**: one file, no np
 |---|---|
 | `jira_whoami` | Check token, server version |
 | `jira_search` | JQL search (slim results) |
-| `jira_get_issue` | Issue with description, comments, links, sub-tasks |
+| `jira_get_issue` | Issue with description, comments, links, sub-tasks, attachments |
 | `jira_list_projects` | Projects you can see |
 | `jira_create_meta` | Issue types, required fields, allowed values |
 | `jira_create_issue` | Create, optionally from a preset |
 | `jira_update_issue` | Set fields or add/remove values |
 | `jira_add_comment` | Comment (wiki markup) |
+| `jira_add_attachment` | Attach local files, or inline text / base64 (50 MB each), optional comment |
 | `jira_transition` | List or run workflow transitions |
 | `jira_resolve` | Walk to Resolved (via In Progress) and set resolution Fixed; per-type overrides |
 | `jira_link_issues` | Link issues / list link types |
@@ -105,6 +106,7 @@ Notes:
 node jira-mcp.mjs --list
 node jira-mcp.mjs --call jira_search '{"jql":"assignee = currentUser() AND resolution = Unresolved"}'
 node jira-mcp.mjs --call jira_create_issue --args-file req.json
+node jira-mcp.mjs --call jira_add_attachment '{"key":"PROJ-123","path":"notes.md","comment":"See [^notes.md]"}'
 ```
 
 ## Note
